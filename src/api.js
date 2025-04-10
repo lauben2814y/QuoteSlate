@@ -54,6 +54,20 @@ function hasMatchingTags(quote, requestedTags) {
   return requestedTags.every((tag) => quoteTags.has(tag));
 }
 
+// Helper function to check if a quote matches partial tag search terms
+function hasPartialTagMatch(quote, tagTerms) {
+  if (!tagTerms || tagTerms.length === 0) return true;
+  
+  // Convert quote tags to lowercase for case-insensitive matching
+  const quoteTags = quote.tags.map(tag => tag.toLowerCase());
+  
+  // Check if there's at least one tag that contains each search term
+  return tagTerms.every(term => {
+    const normalizedTerm = term.toLowerCase();
+    return quoteTags.some(tag => tag.includes(normalizedTerm));
+  });
+}
+
 // Main quote retrieval function
 function getQuotes({
   maxLength = null,
@@ -110,11 +124,11 @@ function getQuotes({
   return quotes;
 }
 
-// Function for searching quotes with partial author matching
-function searchQuotesByPartialAuthors({
+// Function for searching quotes with partial matching
+function searchQuotes({
   maxLength = null,
   minLength = null,
-  tags = null,
+  tagTerms = [],
   limit = 10,
   authorTerms = [],
 } = {}) {
@@ -127,9 +141,11 @@ function searchQuotesByPartialAuthors({
     );
   }
 
-  // Filter by tags if provided
-  if (tags) {
-    validQuotes = validQuotes.filter((quote) => hasMatchingTags(quote, tags));
+  // Filter by partial tag matches if provided
+  if (tagTerms && tagTerms.length > 0) {
+    validQuotes = validQuotes.filter((quote) => 
+      hasPartialTagMatch(quote, tagTerms)
+    );
   }
 
   // If no quotes match the criteria, return null
@@ -289,13 +305,22 @@ app.get("/api/quotes/random", (req, res) => {
   }
 });
 
-// Quotes list endpoint (always returns an array)
+// MODIFIED: Quotes list endpoint with partial tag matching support
 app.get("/api/quotes/list", (req, res) => {
   const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
   const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
-  const tags = req.query.tags
-    ? req.query.tags.split(",").map((tag) => tag.toLowerCase())
+  
+  // Check if we should use exact tag matching or partial tag matching
+  const exactTags = req.query.exactTags === "true";
+  
+  const tags = req.query.tags 
+    ? req.query.tags.split(",").map(tag => tag.toLowerCase())
     : null;
+  
+  const tagTerms = !exactTags && req.query.tags 
+    ? req.query.tags.split(",")
+    : [];
+  
   const authors = req.query.authors ? req.query.authors.split(",") : null;
   const limit = req.query.limit ? parseInt(req.query.limit) : 10; // Default to 10 quotes
 
@@ -347,8 +372,8 @@ app.get("/api/quotes/list", (req, res) => {
     }
   }
 
-  // Validate tags only if tags parameter is provided
-  if (tags) {
+  // Validate tags only if exact tags are required and tags parameter is provided
+  if (exactTags && tags) {
     try {
       const validTags = new Set(
         JSON.parse(
@@ -375,7 +400,21 @@ app.get("/api/quotes/list", (req, res) => {
     });
   }
 
-  const quotes = getQuotes({ maxLength, minLength, tags, count: limit, authors });
+  let quotes;
+  
+  if (exactTags) {
+    // Use the original getQuotes function for exact tag matching
+    quotes = getQuotes({ maxLength, minLength, tags, count: limit, authors });
+  } else {
+    // Use the new searchQuotes function for partial tag matching
+    quotes = searchQuotes({ 
+      maxLength, 
+      minLength, 
+      tagTerms, 
+      limit, 
+      authorTerms: [] // No author search in this case
+    });
+  }
 
   if (quotes) {
     res.json(quotes); // Always return an array
@@ -384,13 +423,11 @@ app.get("/api/quotes/list", (req, res) => {
   }
 });
 
-// NEW ENDPOINT: Search quotes by partial author names (always returns an array)
+// Search quotes by partial author names (always returns an array)
 app.get("/api/quotes/author-search", (req, res) => {
   const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
   const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
-  const tags = req.query.tags
-    ? req.query.tags.split(",").map((tag) => tag.toLowerCase())
-    : null;
+  const tagTerms = req.query.tags ? req.query.tags.split(",") : [];
   const authorTerms = req.query.terms ? req.query.terms.split(",") : [];
   const limit = req.query.limit ? parseInt(req.query.limit) : 10; // Default to 10 quotes
 
@@ -401,25 +438,42 @@ app.get("/api/quotes/author-search", (req, res) => {
     });
   }
 
-  // Validate tags only if tags parameter is provided
-  if (tags) {
-    try {
-      const validTags = new Set(
-        JSON.parse(
-          fs.readFileSync(path.join(__dirname, "../data/tags.json"), "utf8"),
-        ),
-      );
-      const invalidTags = tags.filter((tag) => !validTags.has(tag));
-      if (invalidTags.length > 0) {
-        return res.status(400).json({
-          error: `Invalid tag(s): ${invalidTags.join(", ")}`,
-        });
-      }
-    } catch (error) {
-      return res.status(500).json({
-        error: "Error validating tags",
-      });
-    }
+  // Validate length parameters if both are provided
+  if (minLength !== null && maxLength !== null && minLength > maxLength) {
+    return res.status(400).json({
+      error: "minLength must be less than or equal to maxLength.",
+    });
+  }
+
+  // Get matching quotes using partial search
+  const quotes = searchQuotes({ 
+    maxLength, 
+    minLength, 
+    tagTerms, 
+    limit, 
+    authorTerms 
+  });
+
+  if (quotes) {
+    res.json(quotes); // Always return an array
+  } else {
+    res.status(404).json({ error: "No quotes found matching the criteria." });
+  }
+});
+
+// NEW ENDPOINT: Combined search with partial tag and author matching
+app.get("/api/quotes/search", (req, res) => {
+  const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
+  const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
+  const tagTerms = req.query.tags ? req.query.tags.split(",") : [];
+  const authorTerms = req.query.authors ? req.query.authors.split(",") : [];
+  const limit = req.query.limit ? parseInt(req.query.limit) : 10; // Default to 10 quotes
+
+  // Validate limit parameter
+  if (isNaN(limit) || limit < 1 || limit > 100) {
+    return res.status(400).json({
+      error: "Limit must be a number between 1 and 100.",
+    });
   }
 
   // Validate length parameters if both are provided
@@ -429,11 +483,11 @@ app.get("/api/quotes/author-search", (req, res) => {
     });
   }
 
-  // Get matching quotes using partial author search
-  const quotes = searchQuotesByPartialAuthors({ 
+  // Get matching quotes using partial search for both tags and authors
+  const quotes = searchQuotes({ 
     maxLength, 
     minLength, 
-    tags, 
+    tagTerms, 
     limit, 
     authorTerms 
   });
