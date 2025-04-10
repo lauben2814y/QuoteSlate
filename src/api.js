@@ -35,6 +35,18 @@ function hasMatchingAuthor(quote, requestedAuthors) {
   );
 }
 
+// Helper function to check if a quote's author contains the partial search terms
+function hasPartialAuthorMatch(quote, searchTerms) {
+  if (!searchTerms || searchTerms.length === 0) return true;
+  
+  const quoteAuthor = normalizeAuthorName(quote.author);
+  
+  // Check if all search terms are found in the author name
+  return searchTerms.every(term => 
+    quoteAuthor.includes(normalizeAuthorName(term))
+  );
+}
+
 // Helper function to check if a quote matches all requested tags
 function hasMatchingTags(quote, requestedTags) {
   if (!requestedTags) return true;
@@ -90,6 +102,62 @@ function getQuotes({
   const tempQuotes = [...validQuotes];
 
   for (let i = 0; i < count; i++) {
+    const randomIndex = Math.floor(Math.random() * tempQuotes.length);
+    quotes.push(tempQuotes[randomIndex]);
+    tempQuotes.splice(randomIndex, 1);
+  }
+
+  return quotes;
+}
+
+// Function for searching quotes with partial author matching
+function searchQuotesByPartialAuthors({
+  maxLength = null,
+  minLength = null,
+  tags = null,
+  limit = 10,
+  authorTerms = [],
+} = {}) {
+  let validQuotes = [...quotesData];
+
+  // Filter by partial author name matches if provided
+  if (authorTerms && authorTerms.length > 0) {
+    validQuotes = validQuotes.filter((quote) =>
+      hasPartialAuthorMatch(quote, authorTerms),
+    );
+  }
+
+  // Filter by tags if provided
+  if (tags) {
+    validQuotes = validQuotes.filter((quote) => hasMatchingTags(quote, tags));
+  }
+
+  // If no quotes match the criteria, return null
+  if (validQuotes.length === 0) {
+    return null;
+  }
+
+  // Apply length filters
+  if (minLength !== null) {
+    validQuotes = validQuotes.filter((quote) => quote.length >= minLength);
+  }
+
+  if (maxLength !== null) {
+    validQuotes = validQuotes.filter((quote) => quote.length <= maxLength);
+  }
+
+  if (validQuotes.length === 0) {
+    return null;
+  }
+
+  // If requesting more quotes than available, return all available quotes
+  limit = Math.min(limit, validQuotes.length);
+
+  // Get random quotes
+  const quotes = [];
+  const tempQuotes = [...validQuotes];
+
+  for (let i = 0; i < limit; i++) {
     const randomIndex = Math.floor(Math.random() * tempQuotes.length);
     quotes.push(tempQuotes[randomIndex]);
     tempQuotes.splice(randomIndex, 1);
@@ -221,7 +289,7 @@ app.get("/api/quotes/random", (req, res) => {
   }
 });
 
-// NEW ENDPOINT: Quotes list endpoint (always returns an array)
+// Quotes list endpoint (always returns an array)
 app.get("/api/quotes/list", (req, res) => {
   const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
   const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
@@ -308,6 +376,67 @@ app.get("/api/quotes/list", (req, res) => {
   }
 
   const quotes = getQuotes({ maxLength, minLength, tags, count: limit, authors });
+
+  if (quotes) {
+    res.json(quotes); // Always return an array
+  } else {
+    res.status(404).json({ error: "No quotes found matching the criteria." });
+  }
+});
+
+// NEW ENDPOINT: Search quotes by partial author names (always returns an array)
+app.get("/api/quotes/author-search", (req, res) => {
+  const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
+  const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
+  const tags = req.query.tags
+    ? req.query.tags.split(",").map((tag) => tag.toLowerCase())
+    : null;
+  const authorTerms = req.query.terms ? req.query.terms.split(",") : [];
+  const limit = req.query.limit ? parseInt(req.query.limit) : 10; // Default to 10 quotes
+
+  // Validate limit parameter
+  if (isNaN(limit) || limit < 1 || limit > 100) {
+    return res.status(400).json({
+      error: "Limit must be a number between 1 and 100.",
+    });
+  }
+
+  // Validate tags only if tags parameter is provided
+  if (tags) {
+    try {
+      const validTags = new Set(
+        JSON.parse(
+          fs.readFileSync(path.join(__dirname, "../data/tags.json"), "utf8"),
+        ),
+      );
+      const invalidTags = tags.filter((tag) => !validTags.has(tag));
+      if (invalidTags.length > 0) {
+        return res.status(400).json({
+          error: `Invalid tag(s): ${invalidTags.join(", ")}`,
+        });
+      }
+    } catch (error) {
+      return res.status(500).json({
+        error: "Error validating tags",
+      });
+    }
+  }
+
+  // Validate length parameters if both are provided
+  if (minLength !== null && maxLength !== null && minLength > maxLength) {
+    return res.status(400).json({
+      error: "minLength must be less than or equal to maxLength.",
+    });
+  }
+
+  // Get matching quotes using partial author search
+  const quotes = searchQuotesByPartialAuthors({ 
+    maxLength, 
+    minLength, 
+    tags, 
+    limit, 
+    authorTerms 
+  });
 
   if (quotes) {
     res.json(quotes); // Always return an array
