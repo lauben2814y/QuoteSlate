@@ -2,7 +2,6 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const rateLimit = require("express-rate-limit");
 const app = express();
 
 // Trust the proxy to get the real client IP
@@ -16,20 +15,6 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] Request from IP: ${req.ip}`);
   next();
 });
-
-// Rate limiter configuration
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    error: "Too many requests, please try again later.",
-  },
-});
-
-// Apply rate limiting to all API routes
-app.use("/api/", apiLimiter);
 
 // Load quotes data
 const quotesData = JSON.parse(
@@ -141,7 +126,7 @@ app.get("/api/tags", (req, res) => {
   }
 });
 
-// Main quote endpoint
+// Main quote endpoint (returns single quote or array based on count)
 app.get("/api/quotes/random", (req, res) => {
   const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
   const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
@@ -231,6 +216,101 @@ app.get("/api/quotes/random", (req, res) => {
 
   if (quotes) {
     res.json(count === 1 ? quotes[0] : quotes);
+  } else {
+    res.status(404).json({ error: "No quotes found matching the criteria." });
+  }
+});
+
+// NEW ENDPOINT: Quotes list endpoint (always returns an array)
+app.get("/api/quotes/list", (req, res) => {
+  const maxLength = req.query.maxLength ? parseInt(req.query.maxLength) : null;
+  const minLength = req.query.minLength ? parseInt(req.query.minLength) : null;
+  const tags = req.query.tags
+    ? req.query.tags.split(",").map((tag) => tag.toLowerCase())
+    : null;
+  const authors = req.query.authors ? req.query.authors.split(",") : null;
+  const limit = req.query.limit ? parseInt(req.query.limit) : 10; // Default to 10 quotes
+
+  // Validate limit parameter
+  if (isNaN(limit) || limit < 1 || limit > 100) {
+    return res.status(400).json({
+      error: "Limit must be a number between 1 and 100.",
+    });
+  }
+
+  // Validate authors only if authors parameter is provided
+  if (authors) {
+    try {
+      const authorsData = JSON.parse(
+        fs.readFileSync(path.join(__dirname, "../data/authors.json"), "utf8"),
+      );
+
+      // Create a map of lowercase author names to their proper case versions
+      const authorMap = {};
+      Object.keys(authorsData).forEach((author) => {
+        authorMap[author.toLowerCase()] = author;
+      });
+
+      // Check for invalid authors and convert to proper case
+      const processedAuthors = [];
+      const invalidAuthors = [];
+
+      authors.forEach((author) => {
+        const lowercaseAuthor = author.toLowerCase();
+        if (authorMap[lowercaseAuthor]) {
+          processedAuthors.push(authorMap[lowercaseAuthor]);
+        } else {
+          invalidAuthors.push(author);
+        }
+      });
+
+      if (invalidAuthors.length > 0) {
+        return res.status(400).json({
+          error: `Invalid author(s): ${invalidAuthors.join(", ")}`,
+        });
+      }
+
+      // Replace the authors array with the properly cased versions
+      authors.splice(0, authors.length, ...processedAuthors);
+    } catch (error) {
+      return res.status(500).json({
+        error: "Error validating authors",
+      });
+    }
+  }
+
+  // Validate tags only if tags parameter is provided
+  if (tags) {
+    try {
+      const validTags = new Set(
+        JSON.parse(
+          fs.readFileSync(path.join(__dirname, "../data/tags.json"), "utf8"),
+        ),
+      );
+      const invalidTags = tags.filter((tag) => !validTags.has(tag));
+      if (invalidTags.length > 0) {
+        return res.status(400).json({
+          error: `Invalid tag(s): ${invalidTags.join(", ")}`,
+        });
+      }
+    } catch (error) {
+      return res.status(500).json({
+        error: "Error validating tags",
+      });
+    }
+  }
+
+  // Validate length parameters if both are provided
+  if (minLength !== null && maxLength !== null && minLength > maxLength) {
+    return res.status(400).json({
+      error: "minLength must be less than or equal to maxLength.",
+    });
+  }
+
+  const quotes = getQuotes({ maxLength, minLength, tags, count: limit, authors });
+
+  if (quotes) {
+    res.json(quotes); // Always return an array
   } else {
     res.status(404).json({ error: "No quotes found matching the criteria." });
   }
